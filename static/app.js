@@ -6,6 +6,13 @@ const chat = document.getElementById('chat')
 // Track last processed image id and full_url
 let lastEditedId = null
 let lastEditedFullUrl = null
+// Track last uploaded image (via paste / drag-drop) id and full_url
+let lastUploadedId = null
+let lastUploadedFilename = null
+let lastUploadedFullUrl = null
+// pending upload (not yet sent). Structure: {blob, filename, dataUrl}
+let pendingUpload = null
+const pendingPreviewEl = document.getElementById('pendingPreview')
 
 // helper to create bubbles
 function createBubble(who='assistant'){
@@ -201,8 +208,17 @@ sendBtn.onclick = async () => {
   let useEdited = false
   let useChatOnly = false
   let f = null
-  // Determine source: file upload, reuse last edited, or chat-only text
-  if (!fileEl.files || fileEl.files.length === 0) {
+  let fromPending = false
+  
+  // Determine source: pending upload, file upload, reuse last edited, or chat-only text
+  if (pendingUpload) {
+    // Use the pending pasted/dropped image
+    f = pendingUpload.blob
+    if (!(f instanceof File)) {
+      f = new File([f], pendingUpload.filename, {type: pendingUpload.blob.type || 'image/png'})
+    }
+    fromPending = true
+  } else if (!fileEl.files || fileEl.files.length === 0) {
     // Only reuse the last edited image if the user explicitly checked the "keep editing" box
     if (keepEditedEl && keepEditedEl.checked && lastEditedId && lastEditedFullUrl) {
       useEdited = true
@@ -223,6 +239,8 @@ sendBtn.onclick = async () => {
     userBubble.content.textContent = `Continue editing last image — "${instr}"`
   } else if (useChatOnly) {
     userBubble.content.textContent = instr
+  } else if (fromPending) {
+    userBubble.content.textContent = `Upload: ${f.name} — "${instr}"`
   } else {
     userBubble.content.textContent = `Upload: ${f.name} — "${instr}"`
   }
@@ -295,7 +313,12 @@ sendBtn.onclick = async () => {
       thumb.addEventListener('click', ()=> openLightbox(ev.target.result))
       userBubble.content.appendChild(wrapper)
     }
-    reader.readAsDataURL(f)
+    if (fromPending) {
+      // Use the already available dataUrl from pending upload
+      reader.onload({ target: { result: pendingUpload.dataUrl } })
+    } else {
+      reader.readAsDataURL(f)
+    }
   }
 
   let paramsObj = {}
@@ -307,7 +330,9 @@ sendBtn.onclick = async () => {
     const form = new FormData()
     form.append('image', f)
     form.append('instruction', instr)
-    const res = await fetch('/upload', {method:'POST', body: form})
+    // If the assistant previously returned a tool call, we could attach it to the stream later.
+    let uploadUrl = '/upload'
+    const res = await fetch(uploadUrl, {method:'POST', body: form})
     j = await res.json()
     if (j.error){
       const errB = createBubble('assistant')
@@ -316,6 +341,11 @@ sendBtn.onclick = async () => {
     }
     // Clear the file input so that an empty input signals "use last edited image"
     try { fileEl.value = '' } catch (e) { /* ignore */ }
+    // Clear pending upload if it was used
+    if (fromPending) {
+      pendingUpload = null
+      if (pendingPreviewEl) pendingPreviewEl.innerHTML = ''
+    }
     paramsObj = {id: j.id, filename: j.filename, instruction: instr}
   } else {
     // reuse lastEditedId and instruct server to use edited image
@@ -327,11 +357,25 @@ sendBtn.onclick = async () => {
   assistant.content.classList.add('assistant-stream','px-3','py-2','rounded-xl')
   assistant.content.textContent = ''
 
+    // store last tool call returned by the assistant (if any)
+    window.lastToolCall = window.lastToolCall || null
+
   // Clear the instruction input after sending (normal chat behavior)
   try{ instrEl.value = '' }catch(e){}
 
   // Prefer using local Ollama streaming if enabled. Set window.USE_OLLAMA = true in the console to try.
   const params = new URLSearchParams(paramsObj)
+  // If the client previously captured a tool call, append it so server can skip parsing
+  try{
+    if (!useChatOnly && window.lastToolCall) {
+      const opName = window.lastToolCall.name || window.lastToolCall.operation || window.lastToolCall.tool || null
+      const opArgs = window.lastToolCall.arguments || window.lastToolCall.args || window.lastToolCall.params || window.lastToolCall.op_params || null
+      if (opName) {
+        params.append('operation', opName)
+        try{ params.append('op_params', JSON.stringify(opArgs || {})) }catch(e){}
+      }
+    }
+  }catch(e){}
   // pick endpoint: chat-only uses /chat, otherwise use /stream with params
   const endpoint = useChatOnly ? ('/chat?instruction=' + encodeURIComponent(instr)) : ('/stream?' + params.toString())
 
@@ -428,9 +472,16 @@ sendBtn.onclick = async () => {
       es.onmessage = (ev) => {
         try{
           const payload = JSON.parse(ev.data)
-            if (payload.type === 'ai'){
-            const txt = payload.text || ''
-            appendStreamedText(assistant, txt)
+              if (payload.type === 'ai'){
+              const txt = payload.text || ''
+              appendStreamedText(assistant, txt)
+              // detect a tool call text and store it for later (client may send it with uploads)
+              if (txt.startsWith('Tool call:')){
+                try{
+                  const jsonText = txt.replace(/^Tool call:\s*/, '')
+                  window.lastToolCall = JSON.parse(jsonText)
+                }catch(e){}
+              }
             if (/\bDone\b/i.test(txt) || /Finished|Done|Done\b/.test(txt)){
               try{ es.close() }catch(e){}
             }
@@ -519,6 +570,104 @@ sendBtn.onclick = async () => {
   es.onerror = (e) => { appendStatus(assistant, ''); es.close() }
   }
 }
+
+// Helper: upload a Blob or File to server /upload and return parsed JSON
+async function uploadBlob(blob, filenameHint='pasted.png'){
+  const form = new FormData()
+  // try to create a File so server sees a proper filename
+  let fileToSend = blob
+  try{
+    if (!(blob instanceof File)){
+      fileToSend = new File([blob], filenameHint, {type: blob.type || 'image/png'})
+    }
+  }catch(e){ /* some browsers may not allow File ctor; send blob directly */ }
+  form.append('image', fileToSend)
+  form.append('instruction', '')
+  // choose upload endpoint and do a single fetch
+  let uploadUrl = '/upload'
+  const res = await fetch(uploadUrl, {method:'POST', body: form})
+  const j = await res.json()
+  return j
+}
+
+// Show a small user bubble preview for uploaded images (paste / drop)
+function showUploadedPreview(dataUrl, filename, id){
+  // If called before user sends, show preview in the pending area
+  if (pendingPreviewEl){
+    pendingPreviewEl.innerHTML = ''
+    const wrapper = document.createElement('div')
+    wrapper.className = 'flex items-center gap-2'
+    const img = document.createElement('img')
+    img.src = dataUrl
+    img.className = 'rounded-md cursor-zoom-in block'
+    img.style.maxWidth = '120px'
+    img.style.maxHeight = '90px'
+    img.style.objectFit = 'cover'
+    img.addEventListener('click', ()=> openLightbox(dataUrl))
+    const meta = document.createElement('div')
+    meta.className = 'text-xs text-slate-300'
+    meta.textContent = filename || 'pasted image'
+    const cancel = document.createElement('button')
+    cancel.textContent = 'Remove'
+    cancel.className = 'ml-2 text-xs text-red-400'
+    cancel.addEventListener('click', ()=>{ pendingUpload = null; pendingPreviewEl.innerHTML = '' })
+    wrapper.appendChild(img)
+    wrapper.appendChild(meta)
+    wrapper.appendChild(cancel)
+    pendingPreviewEl.appendChild(wrapper)
+  }
+  // store uploaded id/filename for later use if needed
+  lastUploadedId = id || lastUploadedId
+  lastUploadedFilename = filename || lastUploadedFilename
+  if (id && filename){ lastUploadedFullUrl = `/uploads/${id}_${filename}` }
+}
+
+// Paste handler: listen for image data in clipboard and upload it (but do not start an edit)
+document.addEventListener('paste', async (e)=>{
+  try{
+    const items = (e.clipboardData && e.clipboardData.items) || []
+    for (const it of items){
+      if (it.type && it.type.startsWith('image/')){
+        const blob = it.getAsFile() || it.getAsFile()
+        if (!blob) continue
+        // show local preview immediately
+        const reader = new FileReader()
+        reader.onload = async (ev)=>{
+          // stage pending upload instead of immediately sending
+          pendingUpload = { blob: blob, filename: blob.name || 'pasted.png', dataUrl: ev.target.result }
+          showUploadedPreview(ev.target.result, pendingUpload.filename, null)
+        }
+        reader.readAsDataURL(blob)
+        // only handle first image
+        break
+      }
+    }
+  }catch(err){ console.error('paste upload failed', err) }
+})
+
+// Drag & drop handler on chat area: upload dropped image(s) without sending
+chat.addEventListener('dragover', (e)=>{ e.preventDefault(); e.dataTransfer.dropEffect = 'copy' })
+chat.addEventListener('drop', async (e)=>{
+  e.preventDefault()
+  try{
+    const files = Array.from(e.dataTransfer.files || [])
+    for (const f of files){
+      if (!f.type.startsWith('image/')) continue
+      // show preview immediately
+      const reader = new FileReader()
+      reader.onload = (ev)=>{
+        // stage pending upload
+        pendingUpload = { blob: f, filename: f.name, dataUrl: ev.target.result }
+        showUploadedPreview(ev.target.result, f.name, null)
+      }
+      reader.readAsDataURL(f)
+      // only handle first image for now
+      break
+    }
+  }catch(err){ console.error('drop upload failed', err) }
+})
+
+
 
 
   // Allow pressing Enter to send the chat. Use Shift+Enter for a newline.

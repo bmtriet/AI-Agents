@@ -45,8 +45,10 @@
               <input id="keepEdited" type="checkbox" class="w-4 h-4" />
               Keep editing last image
             </label>
+            <!-- container for a pending pasted / dropped image preview (before sending) -->
+            <div id="pendingPreview" class="flex items-center gap-3 mr-2"></div>
             <input id="instruction" type="text" placeholder="e.g. make it grayscale" class="flex-1 bg-transparent border border-slate-700 rounded-md px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-            <button id="send" class="bg-gradient-to-r from-indigo-500 to-pink-500 text-white px-4 py-2 rounded-md shadow hover:scale-105 transition-transform">Upload & Edit</button>
+            <button id="send" class="bg-gradient-to-r from-indigo-500 to-pink-500 text-white px-4 py-2 rounded-md shadow hover:scale-105 transition-transform">Send</button>
           </div>
         </section>
 

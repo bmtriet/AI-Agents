@@ -294,6 +294,9 @@ def stream():
     filename = request.args.get('filename')
     source = request.args.get('source', 'original')
     instruction = request.args.get('instruction', '')
+    # Optional: client can pass operation/op_params to skip model parsing and apply directly
+    forced_operation = request.args.get('operation')
+    forced_op_params = request.args.get('op_params')
     if not ident:
         return "Missing id", 400
 
@@ -316,37 +319,46 @@ def stream():
         # Initial progress
         yield f"data: {json.dumps({'type':'ai','text':'Received image, parsing instruction...'})}\n\n"
 
-        # Call model to parse using streaming tool-calling
-        tool_call = None
-        for kind, payload in call_qwen_parse_stream(instruction):
-            if kind == 'chunk':
-                # forward chunk text to client
-                try:
-                    txt = payload if isinstance(payload, str) else json.dumps(payload)
-                except Exception:
-                    txt = str(payload)
-                yield f"data: {json.dumps({'type':'ai','text': txt})}\n\n"
-            elif kind == 'tool_call':
-                tool_call = payload
-                yield f"data: {json.dumps({'type':'ai','text': 'Received tool call: ' + json.dumps(tool_call)})}\n\n"
-                break
-            elif kind == 'error':
-                yield f"data: {json.dumps({'type':'ai','text': 'Error parsing instruction: ' + str(payload)})}\n\n"
+        # If client forced an operation, skip model parsing and use provided args
+        if forced_operation:
+            try:
+                parsed = {'operation': forced_operation, 'params': json.loads(forced_op_params or '{}')}
+                yield f"data: {json.dumps({'type':'ai','text': 'Using provided operation: ' + json.dumps(parsed)})}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'type':'ai','text': 'Invalid op_params: ' + str(e)})}\n\n"
+                return
+        else:
+            # Call model to parse using streaming tool-calling
+            tool_call = None
+            for kind, payload in call_qwen_parse_stream(instruction):
+                if kind == 'chunk':
+                    # forward chunk text to client
+                    try:
+                        txt = payload if isinstance(payload, str) else json.dumps(payload)
+                    except Exception:
+                        txt = str(payload)
+                    yield f"data: {json.dumps({'type':'ai','text': txt})}\n\n"
+                elif kind == 'tool_call':
+                    tool_call = payload
+                    yield f"data: {json.dumps({'type':'ai','text': 'Received tool call: ' + json.dumps(tool_call)})}\n\n"
+                    break
+                elif kind == 'error':
+                    yield f"data: {json.dumps({'type':'ai','text': 'Error parsing instruction: ' + str(payload)})}\n\n"
+                    return
+
+            if tool_call is None:
+                yield f"data: {json.dumps({'type':'ai','text': 'No tool call returned by model.'})}\n\n"
                 return
 
-        if tool_call is None:
-            yield f"data: {json.dumps({'type':'ai','text': 'No tool call returned by model.'})}\n\n"
-            return
+            # Extract function arguments
+            func = tool_call.get('function') if isinstance(tool_call, dict) else None
+            if not func:
+                yield f"data: {json.dumps({'type':'ai','text': 'Malformed tool_call object.'})}\n\n"
+                return
 
-        # Extract function arguments
-        func = tool_call.get('function') if isinstance(tool_call, dict) else None
-        if not func:
-            yield f"data: {json.dumps({'type':'ai','text': 'Malformed tool_call object.'})}\n\n"
-            return
-
-        args = func.get('arguments') or {}
-        # At this point args should be a dict like {"operation": "grayscale", "params": {...}}
-        parsed = args
+            args = func.get('arguments') or {}
+            # At this point args should be a dict like {"operation": "grayscale", "params": {...}}
+            parsed = args
 
         # Apply operation
         yield f"data: {json.dumps({'type':'ai','text': 'Applying operation...'})}\n\n"
