@@ -274,7 +274,7 @@ def stream():
         full_url = f"/uploads/{out_name}"
         yield f"data: {json.dumps({'type':'image','thumbnail': thumb_data_url, 'full_url': full_url})}\n\n"
 
-        yield f"data: {json.dumps({'type':'ai','text':'Done'})}\n\n"
+        # yield f"data: {json.dumps({'type':'ai','text':'Done'})}\n\n"
 
     return Response(gen(), mimetype='text/event-stream')
 
@@ -302,7 +302,7 @@ def chat_stream():
                     yield f"data: {json.dumps({'type':'ai','text': 'Tool call: ' + json.dumps(payload)})}\n\n"
                 elif kind == 'error':
                     yield f"data: {json.dumps({'type':'ai','text': 'Error: ' + str(payload)})}\n\n"
-            yield f"data: {json.dumps({'type':'ai','text':'Done'})}\n\n"
+            # yield f"data: {json.dumps({'type':'ai','text':'Done'})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type':'ai','text':'Stream error: ' + str(e)})}\n\n"
 

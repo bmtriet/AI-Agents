@@ -1,5 +1,6 @@
 const fileEl = document.getElementById('file')
 const instrEl = document.getElementById('instruction')
+const keepEditedEl = document.getElementById('keepEdited')
 const sendBtn = document.getElementById('send')
 const chat = document.getElementById('chat')
 // Track last processed image id and full_url
@@ -118,6 +119,18 @@ function appendStreamedText(assistant, chunk){
   chat.scrollTop = chat.scrollHeight
 }
 
+// Append a small status line to the assistant bubble without replacing
+// the bubble's DOM (important so existing think blocks stay collapsed).
+function appendStatus(assistant, msg){
+  if (!assistant || !assistant.content) return
+  const s = document.createElement('div')
+  s.className = 'text-xs text-slate-400 mt-2'
+  s.style.whiteSpace = 'pre-wrap'
+  s.textContent = msg
+  assistant.content.appendChild(s)
+  chat.scrollTop = chat.scrollHeight
+}
+
 // Append final image block
 function appendImage(dataUrl){
   const container = document.createElement('div')
@@ -190,7 +203,8 @@ sendBtn.onclick = async () => {
   let f = null
   // Determine source: file upload, reuse last edited, or chat-only text
   if (!fileEl.files || fileEl.files.length === 0) {
-    if (lastEditedId && lastEditedFullUrl) {
+    // Only reuse the last edited image if the user explicitly checked the "keep editing" box
+    if (keepEditedEl && keepEditedEl.checked && lastEditedId && lastEditedFullUrl) {
       useEdited = true
     } else if (instr.trim().length > 0) {
       // allow text-only chat when no image is provided
@@ -313,6 +327,9 @@ sendBtn.onclick = async () => {
   assistant.content.classList.add('assistant-stream','px-3','py-2','rounded-xl')
   assistant.content.textContent = ''
 
+  // Clear the instruction input after sending (normal chat behavior)
+  try{ instrEl.value = '' }catch(e){}
+
   // Prefer using local Ollama streaming if enabled. Set window.USE_OLLAMA = true in the console to try.
   const params = new URLSearchParams(paramsObj)
   // pick endpoint: chat-only uses /chat, otherwise use /stream with params
@@ -400,8 +417,8 @@ sendBtn.onclick = async () => {
         model: 'llama3',
         onOpen: ()=>{/* no-op */},
     onChunk: (txt)=> appendStreamedText(assistant, txt),
-        onError: (err)=>{ assistant.content.textContent += '\n[stream error]'; console.error('Ollama stream error', err) },
-        onDone: ()=> { assistant.content.textContent += '\n[done]'; }
+  onError: (err)=>{ appendStatus(assistant, '[stream error]'); console.error('Ollama stream error', err) },
+  onDone: ()=> { appendStatus(assistant, '[done]'); }
       })
       // streamHandle.cancel can be used to cancel if needed
     }catch(err){
@@ -450,7 +467,7 @@ sendBtn.onclick = async () => {
           }
         }catch(e){ console.error('parse', e) }
       }
-      es.onerror = (e) => { assistant.content.textContent = assistant.content.textContent + '\n[stream closed]'; es.close() }
+  es.onerror = (e) => { appendStatus(assistant, ''); es.close() }
     }
   } else {
   // default: use the chosen server-sent events endpoint
@@ -499,7 +516,7 @@ sendBtn.onclick = async () => {
       }catch(e){ console.error('parse', e) }
     }
 
-    es.onerror = (e) => { assistant.content.textContent = assistant.content.textContent + '\n[stream closed]'; es.close() }
+  es.onerror = (e) => { appendStatus(assistant, ''); es.close() }
   }
 }
 

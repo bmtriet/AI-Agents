@@ -41,6 +41,10 @@
 
           <div class="mt-4 bg-slate-800/40 p-4 rounded-lg flex gap-3 items-center sticky bottom-0">
             <input id="file" type="file" accept="image/*" class="block text-sm text-slate-200 file:bg-slate-700 file:text-white file:rounded-full file:px-4 file:py-2" />
+            <label class="flex items-center gap-2 text-xs text-slate-300">
+              <input id="keepEdited" type="checkbox" class="w-4 h-4" />
+              Keep editing last image
+            </label>
             <input id="instruction" type="text" placeholder="e.g. make it grayscale" class="flex-1 bg-transparent border border-slate-700 rounded-md px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
             <button id="send" class="bg-gradient-to-r from-indigo-500 to-pink-500 text-white px-4 py-2 rounded-md shadow hover:scale-105 transition-transform">Upload & Edit</button>
           </div>
