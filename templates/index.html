@@ -1,0 +1,88 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>AI Image Editor</title>
+    <!-- Tailwind CDN for quick styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      /* small custom animation for bubble entrance */
+      @keyframes bubble-in {
+        from { transform: translateY(8px) scale(0.98); opacity: 0 }
+        to { transform: translateY(0) scale(1); opacity: 1 }
+      }
+      .bubble-in { animation: bubble-in 260ms ease-out both }
+      .assistant-stream { background: linear-gradient(90deg, rgba(59,130,246,0.12), rgba(139,92,246,0.08)); }
+    </style>
+  </head>
+  <body class="bg-gray-900 text-slate-100 min-h-screen flex items-center justify-center p-6">
+  <div class="w-full max-w-none bg-gradient-to-br from-slate-800/60 to-slate-900/60 rounded-none shadow-none overflow-visible ring-0">
+      <header class="flex items-center justify-between p-6 border-b border-slate-700">
+        <div class="flex items-center gap-4">
+          <div class="w-12 h-12 rounded-full bg-clip-padding bg-gradient-to-tr from-indigo-500 to-pink-500 shadow-lg flex items-center justify-center">
+            <svg class="w-7 h-7 text-white" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L19 8V16L12 22L5 16V8L12 2Z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div>
+            <h1 class="text-xl font-semibold">AI Image Editor</h1>
+            <p class="text-xs text-slate-400">Chat with Qwen model to edit images (blur / grayscale / pixelate / flip / rotate)</p>
+          </div>
+        </div>
+        <div class="text-sm text-slate-400">Streaming chat • <span id="modelName" class="font-medium"></span>
+          <label style="margin-left:12px; font-weight:600; margin-left:12px; font-size:12px; color:#cbd5e1; display:inline-flex; align-items:center; gap:8px;">
+            <input id="useOllama" type="checkbox" style="width:14px; height:14px;" /> Use Ollama
+          </label>
+        </div>
+      </header>
+
+  <main class="grid grid-cols-1 lg:grid-cols-3 gap-6 p-6 max-w-full w-full">
+        <section class="lg:col-span-2 flex flex-col">
+          <div id="chat" class="flex-1 overflow-auto p-4 space-y-4 bg-gradient-to-b from-transparent to-black/20 rounded-lg" style="min-height:420px"></div>
+
+          <div class="mt-4 bg-slate-800/40 p-4 rounded-lg flex gap-3 items-center sticky bottom-0">
+            <input id="file" type="file" accept="image/*" class="block text-sm text-slate-200 file:bg-slate-700 file:text-white file:rounded-full file:px-4 file:py-2" />
+            <input id="instruction" type="text" placeholder="e.g. make it grayscale" class="flex-1 bg-transparent border border-slate-700 rounded-md px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            <button id="send" class="bg-gradient-to-r from-indigo-500 to-pink-500 text-white px-4 py-2 rounded-md shadow hover:scale-105 transition-transform">Upload & Edit</button>
+          </div>
+        </section>
+
+  <aside class="lg:col-span-1 p-4">
+          <div class="bg-slate-800/50 rounded-lg p-4 space-y-3">
+            <h3 class="text-sm text-slate-300">Quick prompts</h3>
+            <div class="flex flex-col gap-2">
+              <button class="quick text-xs text-left px-3 py-2 rounded-md bg-slate-700/40 hover:bg-slate-700/60">Make it grayscale</button>
+              <button class="quick text-xs text-left px-3 py-2 rounded-md bg-slate-700/40 hover:bg-slate-700/60">Blur with ksize=21</button>
+              <button class="quick text-xs text-left px-3 py-2 rounded-md bg-slate-700/40 hover:bg-slate-700/60">Pixelate scale=0.05</button>
+              <button class="quick text-xs text-left px-3 py-2 rounded-md bg-slate-700/40 hover:bg-slate-700/60">Flip vertical</button>
+              <button class="quick text-xs text-left px-3 py-2 rounded-md bg-slate-700/40 hover:bg-slate-700/60">Rotate angle=90</button>
+            </div>
+          </div>
+        </aside>
+      </main>
+
+      <footer class="p-4 text-xs text-slate-500 border-t border-slate-700">Powered by Ollama • Qwen</footer>
+    </div>
+
+    <!-- Lightbox -->
+    <div id="lightbox" class="hidden fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-6" style="backdrop-filter: blur(6px)">
+      <div class="relative max-h-[90vh] max-w-[95vw]">
+        <button id="lightboxClose" class="absolute top-2 right-2 text-white bg-black/40 rounded-full p-2 hover:bg-black/60">✕</button>
+        <img id="lightboxImg" src="" class="rounded-lg shadow-2xl max-h-[90vh] max-w-[95vw] object-contain" />
+      </div>
+    </div>
+
+    <script>
+      document.getElementById('modelName').textContent = (new URLSearchParams(location.search).get('model') || '')
+      // Initialize Ollama toggle from localStorage
+      const useCheckbox = document.getElementById('useOllama')
+      const stored = localStorage.getItem('useOllama') === '1'
+      useCheckbox.checked = stored
+      window.USE_OLLAMA = stored
+      useCheckbox.addEventListener('change', () => {
+        window.USE_OLLAMA = useCheckbox.checked
+        localStorage.setItem('useOllama', useCheckbox.checked ? '1' : '0')
+      })
+    </script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
