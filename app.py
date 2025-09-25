@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from flask import Flask, request, send_from_directory, render_template, jsonify, Response
 import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 import logging
 
 load_dotenv()
@@ -41,7 +42,7 @@ def call_qwen_parse_stream(instruction):
                     "properties": {
                         "operation": {
                             "type": "string",
-                            "enum": ["blur", "grayscale", "pixelate", "flip", "rotate"]
+                            "enum": ["blur", "grayscale", "pixelate", "flip", "rotate", "create"]
                         },
                         "params": { "type": "object" }
                     },
@@ -94,17 +95,20 @@ def call_qwen_parse_stream(instruction):
 
 
 def apply_operation(image_path, command):
-    # Load with OpenCV from bytes (safer cross-platform than np.fromfile)
-    image_path = Path(image_path)
-    data = image_path.read_bytes()
-    nparr = np.frombuffer(data, dtype=np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-    if img is None:
-        raise ValueError(f"Unable to read image: {image_path}")
-    logging.info(f"apply_operation: loaded image {image_path} shape={img.shape}")
-
     op = command.get('operation')
     params = command.get('params', {}) or {}
+
+    img = None
+    # Load input image only when not creating a brand new image
+    if op != 'create':
+        # Load with OpenCV from bytes (safer cross-platform than np.fromfile)
+        image_path = Path(image_path)
+        data = image_path.read_bytes()
+        nparr = np.frombuffer(data, dtype=np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            raise ValueError(f"Unable to read image: {image_path}")
+        logging.info(f"apply_operation: loaded image {image_path} shape={img.shape}")
 
     if op == 'grayscale':
         out = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -143,6 +147,117 @@ def apply_operation(image_path, command):
         M[0, 2] += (new_w / 2) - cX
         M[1, 2] += (new_h / 2) - cY
         out = cv2.warpAffine(img, M, (new_w, new_h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    elif op == 'create':
+        # Create a new image from params: width, height, background, text, fontsize (px), color
+        width = int(params.get('width', params.get('w', 320)))
+        height = int(params.get('height', params.get('h', 320)))
+        # accept background or background_color
+        bg = (params.get('background') or params.get('background_color') or 'black')
+        text = params.get('text', '') or ''
+        # accept fontsize (px) or font_size
+        fontsize_px = int(params.get('fontsize') or params.get('font_size') or params.get('fontSize') or 20)
+        # accept text color under several keys; default to red as requested
+        textcolor = (params.get('color') or params.get('text_color') or params.get('textColor') or 'red')
+
+        # helper to parse simple color names or hex codes -> RGB tuple
+        def parse_color(col, default=(0, 0, 0)):
+            if not col:
+                return default
+            col = str(col).strip()
+            # hex (#rrggbb)
+            if col.startswith('#') and len(col) in (7, 4):
+                try:
+                    if len(col) == 7:
+                        r = int(col[1:3], 16)
+                        g = int(col[3:5], 16)
+                        b = int(col[5:7], 16)
+                    else:
+                        r = int(col[1]*2, 16)
+                        g = int(col[2]*2, 16)
+                        b = int(col[3]*2, 16)
+                    return (r, g, b)
+                except Exception:
+                    return default
+            # named colors
+            cmap = {
+                'black': (0, 0, 0),
+                'white': (255, 255, 255),
+                'red': (255, 0, 0),
+                'green': (0, 128, 0),
+                'blue': (0, 0, 255),
+                'yellow': (255, 255, 0),
+                'cyan': (0, 255, 255),
+                'magenta': (255, 0, 255),
+                'gray': (128, 128, 128),
+            }
+            return cmap.get(col.lower(), default)
+
+        bg_rgb = parse_color(bg, (0, 0, 0))
+        txt_rgb = parse_color(textcolor, (255, 0, 0))
+
+        # If text color is identical or very close to background, pick a contrasting color
+        def close(a, b, tol=20):
+            return abs(a[0]-b[0]) <= tol and abs(a[1]-b[1]) <= tol and abs(a[2]-b[2]) <= tol
+
+        if close(bg_rgb, txt_rgb):
+            # compute luminance to pick white or black
+            lum = 0.2126*bg_rgb[0] + 0.7152*bg_rgb[1] + 0.0722*bg_rgb[2]
+            txt_rgb = (255, 255, 255) if lum < 128 else (0, 0, 0)
+
+        # Create a PIL image for proper Unicode text rendering
+        img_pil = Image.new('RGB', (width, height), color=bg_rgb)
+        draw = ImageDraw.Draw(img_pil)
+
+        # try to load a TTF font that supports Unicode; fall back to default
+        font = None
+        try:
+            # common DejaVu path on linux
+            font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', fontsize_px)
+        except Exception:
+            try:
+                font = ImageFont.truetype('DejaVuSans.ttf', fontsize_px)
+            except Exception:
+                font = ImageFont.load_default()
+
+        if text:
+            # handle multi-line text by splitting on \n
+            lines = str(text).split('\n')
+            # helper to measure text size robustly across Pillow versions
+            def measure_text(draw_obj, txt, fnt):
+                try:
+                    # Pillow >= 8.0
+                    bbox = draw_obj.textbbox((0, 0), txt, font=fnt)
+                    return (bbox[2] - bbox[0], bbox[3] - bbox[1])
+                except Exception:
+                    try:
+                        return fnt.getsize(txt)
+                    except Exception:
+                        try:
+                            bbox = fnt.getbbox(txt)
+                            return (bbox[2] - bbox[0], bbox[3] - bbox[1])
+                        except Exception:
+                            # fallback estimate
+                            return (len(txt) * 10, int(getattr(fnt, 'size', fontsize_px)))
+
+            total_h = 0
+            line_sizes = []
+            for line in lines:
+                sz = measure_text(draw, line, font)
+                line_sizes.append(sz)
+                total_h += sz[1]
+            # compute starting y to center vertically
+            y = max(0, (height - total_h) // 2)
+            for i, line in enumerate(lines):
+                tw, th = line_sizes[i]
+                x = max(0, (width - tw) // 2)
+                draw.text((x, y), line, fill=txt_rgb, font=font)
+                y += th
+
+        # Convert PIL image to PNG bytes
+        bio = io.BytesIO()
+        img_pil.save(bio, format='PNG')
+        bio.seek(0)
+        return bio.read()
     else:
         raise ValueError(f"Unsupported operation: {op}")
 
@@ -181,21 +296,21 @@ def stream():
     instruction = request.args.get('instruction', '')
     if not ident:
         return "Missing id", 400
-    # filename is optional when source=edited (we'll use <id>_edited.png)
-    if source != 'edited' and not filename:
-        return "Missing filename for original source", 400
 
-    # Determine which file to use as the input image.
-    # source=original -> use the originally uploaded file: <id>_<original_filename>
-    # source=edited -> use the last edited result saved as <id>_edited.png
+    # filename is optional when source=edited (we'll use <id>_edited.png)
+    # If no filename is provided and source is original, we set file_path=None
+    # and defer validation until after we know the operation. This lets the
+    # model request a `create` operation without uploading a source image.
+    file_path = None
     if source == 'edited':
         file_path = UPLOAD_DIR / f"{ident}_edited.png"
         if not file_path.exists():
             return "Edited image not found", 404
     else:
-        file_path = UPLOAD_DIR / f"{ident}_{filename}"
-        if not file_path.exists():
-            return "Original file not found", 404
+        if filename:
+            file_path = UPLOAD_DIR / f"{ident}_{filename}"
+            if not file_path.exists():
+                return "Original file not found", 404
 
     def gen():
         # Initial progress
@@ -298,8 +413,52 @@ def chat_stream():
                     txt = payload if isinstance(payload, str) else json.dumps(payload)
                     yield f"data: {json.dumps({'type':'ai','text': txt})}\n\n"
                 elif kind == 'tool_call':
-                    # If the model returned a tool_call in chat-only mode, surface it as text
-                    yield f"data: {json.dumps({'type':'ai','text': 'Tool call: ' + json.dumps(payload)})}\n\n"
+                    # If the model returned a tool_call in chat-only mode, either surface it
+                    # or, if it's a create operation, execute it and return the image.
+                    try:
+                        func = payload.get('function') if isinstance(payload, dict) else None
+                        args = func.get('arguments') if func else {}
+                    except Exception:
+                        args = {}
+                    op = (args or {}).get('operation')
+                    parsed = args or {}
+                    if op == 'create':
+                        # execute create and return the image as in /stream
+                        try:
+                            out_bytes = apply_operation(None, parsed)
+                        except Exception as e:
+                            yield f"data: {json.dumps({'type':'ai','text':'Error applying create operation: ' + str(e)})}\n\n"
+                            continue
+                        ident = str(uuid.uuid4())
+                        out_name = f"{ident}_edited.png"
+                        out_path = UPLOAD_DIR / out_name
+                        with open(out_path, 'wb') as fh:
+                            fh.write(out_bytes)
+                        # create thumbnail
+                        nparr = np.frombuffer(out_bytes, np.uint8)
+                        img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+                        if img is None:
+                            yield f"data: {json.dumps({'type':'ai','text':'Failed to decode created image for thumbnail.'})}\n\n"
+                            continue
+                        h, w = img.shape[:2]
+                        max_thumb_w = 400
+                        if w > max_thumb_w:
+                            scale = max_thumb_w / float(w)
+                            thumb = cv2.resize(img, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)
+                        else:
+                            thumb = img
+                        is_success, thumb_buf = cv2.imencode('.png', thumb)
+                        if not is_success:
+                            yield f"data: {json.dumps({'type':'ai','text':'Failed to encode thumbnail.'})}\n\n"
+                            continue
+                        thumb_b64 = base64.b64encode(thumb_buf.tobytes()).decode('ascii')
+                        thumb_data_url = f"data:image/png;base64,{thumb_b64}"
+                        full_url = f"/uploads/{out_name}"
+                        yield f"data: {json.dumps({'type':'image','thumbnail': thumb_data_url, 'full_url': full_url})}\n\n"
+                        continue
+                    else:
+                        # Otherwise, surface it as text so the client can decide next steps
+                        yield f"data: {json.dumps({'type':'ai','text': 'Tool call: ' + json.dumps(payload)})}\n\n"
                 elif kind == 'error':
                     yield f"data: {json.dumps({'type':'ai','text': 'Error: ' + str(payload)})}\n\n"
             # yield f"data: {json.dumps({'type':'ai','text':'Done'})}\n\n"
